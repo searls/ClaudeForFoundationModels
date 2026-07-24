@@ -60,6 +60,21 @@ import Testing
     #expect(response.content == "Hi")
   }
 
+  @Test func `a paused turn is replayed and continued`() async throws {
+    let transport = MockTransport(responses: [
+      (200, pausedTextTurn("Hello")),
+      (200, textTurn(deltas: [", world"])),
+    ])
+    let session = LanguageModelSession(model: StubbedClaudeModel(transport: transport))
+
+    let response = try await session.respond(to: "hi")
+
+    #expect(response.content == "Hello, world")
+    #expect(transport.requests.count == 2)
+    let replay = try #require(transport.requests.last?.httpBody)
+    #expect(String(decoding: replay, as: UTF8.self).contains(#""text":"Hello""#))
+  }
+
   @Test func `an API error status is mapped to a typed LanguageModelError`() async throws {
     let transport = MockTransport(
       status: 429,

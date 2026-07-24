@@ -44,6 +44,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
   private let configuration: Configuration
   private let client: ClaudeClient
   private let attestSession: AppAttestSession?
+  static let maxPauseTurnContinuations = 8
 
   public init(configuration: Configuration) throws {
     let transport = Self.makeTransport(timeout: configuration.timeout)
@@ -194,12 +195,55 @@ public struct ClaudeExecutor: LanguageModelExecutor {
     extractingJson: Bool = false,
     onFirstChannelWrite: (@Sendable () -> Void)? = nil
   ) async throws {
-    var events = client.stream(request, headers: headers)
-    if extractingJson {
-      events = Self.extractingJson(from: events)
-    }
+    let events = continuingEvents(
+      request,
+      headers: headers,
+      extractingJson: extractingJson
+    )
     try await EventTranslator()
       .translate(events, into: channel, onFirstChannelWrite: onFirstChannelWrite)
+  }
+
+  private func continuingEvents(
+    _ initialRequest: MessagesRequest,
+    headers: [String: String],
+    extractingJson: Bool
+  ) -> AsyncThrowingStream<StreamEvent, Error> {
+    AsyncThrowingStream { continuation in
+      let task = Task {
+        var request = initialRequest
+        var extractor = JsonStreamExtractor()
+        do {
+          for turn in 0...Self.maxPauseTurnContinuations {
+            var accumulator = TurnAccumulator()
+            for try await rawEvent in client.stream(request, headers: headers) {
+              accumulator.consume(rawEvent)
+              if extractingJson,
+                case .contentBlockDelta(let index, .text(let text)) = rawEvent
+              {
+                let kept = extractor.filter(text)
+                if !kept.isEmpty {
+                  continuation.yield(.contentBlockDelta(index: index, delta: .text(kept)))
+                }
+              } else {
+                continuation.yield(rawEvent)
+              }
+            }
+            guard accumulator.stopReason == .pauseTurn,
+              turn < Self.maxPauseTurnContinuations
+            else { break }
+            let blocks = accumulator.assistantBlocks()
+            if !blocks.isEmpty {
+              request.messages.append(.init(role: .assistant, content: blocks))
+            }
+          }
+          continuation.finish()
+        } catch {
+          continuation.finish(throwing: error)
+        }
+      }
+      continuation.onTermination = { _ in task.cancel() }
+    }
   }
 
   /// Filters text deltas through ``JsonStreamExtractor`` so only one balanced
