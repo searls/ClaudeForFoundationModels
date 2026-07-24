@@ -300,17 +300,20 @@ struct StubbedClaudeModel: LanguageModel {
   let auth: AuthMode
   let attestSession: AppAttestSession?
   let capabilitySet: [LanguageModelCapabilities.Capability]
+  let constrainedDecoding: Bool
 
   init(
     transport: MockTransport,
     auth: AuthMode = .apiKey("sk-test"),
     attestSession: AppAttestSession? = nil,
-    capabilities: [LanguageModelCapabilities.Capability] = [.toolCalling, .reasoning]
+    capabilities: [LanguageModelCapabilities.Capability] = [.toolCalling, .reasoning],
+    constrainedDecoding: Bool = true
   ) {
     self.transport = transport
     self.auth = auth
     self.attestSession = attestSession
     self.capabilitySet = capabilities
+    self.constrainedDecoding = constrainedDecoding
   }
 
   init(fixture: Data) {
@@ -322,7 +325,12 @@ struct StubbedClaudeModel: LanguageModel {
   }
 
   var executorConfiguration: StubbedExecutor.Configuration {
-    .init(transport: transport, auth: auth, attestSession: attestSession)
+    .init(
+      transport: transport,
+      auth: auth,
+      attestSession: attestSession,
+      constrainedDecoding: constrainedDecoding
+    )
   }
 }
 
@@ -333,14 +341,17 @@ struct StubbedExecutor: LanguageModelExecutor {
     let transport: MockTransport
     let auth: AuthMode
     let attestSession: AppAttestSession?
+    let constrainedDecoding: Bool
 
     static func == (a: Self, b: Self) -> Bool {
       a.transport === b.transport && a.auth == b.auth && a.attestSession === b.attestSession
+        && a.constrainedDecoding == b.constrainedDecoding
     }
 
     func hash(into hasher: inout Hasher) {
       hasher.combine(ObjectIdentifier(transport))
       hasher.combine(auth)
+      hasher.combine(constrainedDecoding)
     }
   }
 
@@ -354,7 +365,8 @@ struct StubbedExecutor: LanguageModelExecutor {
         model: .sonnet5,
         baseURL: URL(string: "https://stub.invalid")!,
         authMode: configuration.auth,
-        timeout: 5
+        timeout: 5,
+        constrainedDecoding: configuration.constrainedDecoding
       ),
       transport: configuration.transport,
       attestSession: configuration.attestSession
@@ -368,7 +380,11 @@ struct StubbedExecutor: LanguageModelExecutor {
   ) async throws {
     try await inner.respond(
       to: request,
-      model: ClaudeLanguageModel(name: .sonnet5, auth: configuration.auth),
+      model: ClaudeLanguageModel(
+        name: .sonnet5,
+        auth: configuration.auth,
+        constrainedDecoding: configuration.constrainedDecoding
+      ),
       streamingInto: channel
     )
   }

@@ -7,6 +7,11 @@ import Testing
 
 @testable import ClaudeForFoundationModels
 
+@Generable
+private struct ExplanationPayload {
+  var explanation: String
+}
+
 @Suite struct ClaudeExecutorTests {
   @Test func `api key auth sends x-api-key`() async throws {
     let transport = MockTransport(body: okStream)
@@ -58,6 +63,31 @@ import Testing
     let response = try await session.respond(to: "hi")
 
     #expect(response.content == "Hi")
+  }
+
+  @Test func `prompted structured output repairs an unescaped quote`() async throws {
+    let transport = MockTransport(
+      body: textTurn(
+        deltas: [
+          #"{"explanation":"Literally ""#,
+          #"a monk's shaved head"..."}"#,
+        ]
+      )
+    )
+    let session = LanguageModelSession(
+      model: StubbedClaudeModel(
+        transport: transport,
+        capabilities: [.toolCalling, .reasoning, .guidedGeneration],
+        constrainedDecoding: false
+      )
+    )
+
+    let response = try await session.respond(
+      to: "Explain the phrase",
+      generating: ExplanationPayload.self
+    )
+
+    #expect(response.content.explanation == #"Literally "a monk's shaved head"..."#)
   }
 
   @Test func `a paused turn is replayed and continued`() async throws {

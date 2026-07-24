@@ -41,6 +41,54 @@ private struct OrderedPayload {
     #expect(extract([json, "junk"]) == json)
   }
 
+  @Test func `extractor repairs an unescaped quote before ordinary string content`() {
+    #expect(
+      extract([#"{"text":"say "hello" now"}"#])
+        == #"{"text":"say \"hello\" now"}"#
+    )
+  }
+
+  @Test func `extractor repairs the observed monk explanation`() {
+    #expect(
+      extract([#"{"explanation":"Literally "a monk's shaved head"..."}"#])
+        == #"{"explanation":"Literally \"a monk's shaved head\"..."}"#
+    )
+  }
+
+  @Test func `extractor repairs a quote decided in the next delta`() {
+    #expect(
+      extract([#"{"text":"say ""#, #"hello"}"#])
+        == #"{"text":"say \"hello"}"#
+    )
+  }
+
+  @Test func `extractor repairs after whitespace crosses a delta boundary`() {
+    #expect(
+      extract([#"{"text":"say ""#, " \n", #"hello"}"#])
+        == "{\"text\":\"say \\\" \nhello\"}"
+    )
+  }
+
+  @Test func `extractor preserves valid object key quotes`() {
+    let json = #"{"text":"hello"}"#
+    #expect(extract([json]) == json)
+  }
+
+  @Test func `extractor preserves valid string value closing quotes`() {
+    let json = #"{"values":["one","two"],"last":"three"}"#
+    #expect(extract([json]) == json)
+  }
+
+  @Test func `extractor preserves already escaped quotes`() {
+    let json = #"{"text":"say \"hello\" now"}"#
+    #expect(extract([json]) == json)
+  }
+
+  @Test func `extractor preserves an ambiguous legal closing boundary`() {
+    let json = #"{"text":"hello", world"}"#
+    #expect(extract([json]) == json)
+  }
+
   private func extract(_ deltas: [String]) -> String {
     var extractor = JsonStreamExtractor()
     return deltas.map { extractor.filter($0) }.joined()
