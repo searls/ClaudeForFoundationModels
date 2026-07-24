@@ -40,9 +40,11 @@ package struct ClaudeClient: Sendable {
     let started = Date.now
     let (data, response) = try await transport.data(for: urlRequest(for: req, headers: headers))
     let total = Date.now.timeIntervalSince(started)
-    Self.logger.info("send \(req.model, privacy: .public) total=\(total, format: .fixed(precision: 2))s")
+    Self.logger.info(
+      "send \(req.model, privacy: .public) total=\(total, format: .fixed(precision: 2))s"
+    )
     #if DEBUG
-      print("[claude-api] send \(req.model) total=\(String(format: "%.2f", total))s")
+    print("[claude-api] send \(req.model) total=\(String(format: "%.2f", total))s")
     #endif
     try Self.check(response, body: data)
     return try JSONDecoder().decode(MessagesResponse.self, from: data)
@@ -83,18 +85,22 @@ package struct ClaudeClient: Sendable {
               awaitingFirstEvent = false
               let ttfb = Date.now.timeIntervalSince(started)
               Self.logger.info(
-                "stream \(req.model, privacy: .public) ttfb=\(ttfb, format: .fixed(precision: 2))s request-id=\(requestID, privacy: .public)")
+                "stream \(req.model, privacy: .public) ttfb=\(ttfb, format: .fixed(precision: 2))s request-id=\(requestID, privacy: .public)"
+              )
               #if DEBUG
-                print("[claude-api] stream \(req.model) ttfb=\(String(format: "%.2f", ttfb))s request-id=\(requestID)")
+              print(
+                "[claude-api] stream \(req.model) ttfb=\(String(format: "%.2f", ttfb))s request-id=\(requestID)"
+              )
               #endif
             }
             continuation.yield(event)
           }
           let total = Date.now.timeIntervalSince(started)
           Self.logger.info(
-            "stream \(req.model, privacy: .public) total=\(total, format: .fixed(precision: 2))s")
+            "stream \(req.model, privacy: .public) total=\(total, format: .fixed(precision: 2))s"
+          )
           #if DEBUG
-            print("[claude-api] stream \(req.model) total=\(String(format: "%.2f", total))s")
+          print("[claude-api] stream \(req.model) total=\(String(format: "%.2f", total))s")
           #endif
           continuation.finish()
         } catch {

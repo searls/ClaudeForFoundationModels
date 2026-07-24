@@ -19,7 +19,8 @@ enum RequestBuilder {
     from request: LanguageModelExecutorGenerationRequest,
     model: ClaudeModel,
     fixedEffort: ClaudeModel.Effort? = nil,
-    serverTools: Set<ClaudeServerTool> = []
+    serverTools: Set<ClaudeServerTool> = [],
+    constrainedDecoding: Bool = true
   ) throws -> Built {
     var system: String?
     var messages: [Message] = []
@@ -125,23 +126,34 @@ enum RequestBuilder {
 
     let isStructured = request.schema != nil
     if let schema = request.schema {
-      // Unlike effort, a schema is a contract, not a hint — without
-      // constrained decoding the response may not decode at all, so failing
-      // loudly beats silently dropping it.
-      guard model.capabilities.structuredOutput else {
-        throw LanguageModelError.unsupportedGenerationGuide(
-          .init(
-            schemaName: nil,
-            debugDescription:
-              "\(model.id) does not support structured output (output_config.format)."
+      if constrainedDecoding {
+        // Unlike effort, a schema is a contract, not a hint — without
+        // constrained decoding the response may not decode at all, so failing
+        // loudly beats silently dropping it.
+        guard model.capabilities.structuredOutput else {
+          throw LanguageModelError.unsupportedGenerationGuide(
+            .init(
+              schemaName: nil,
+              debugDescription:
+                "\(model.id) does not support structured output (output_config.format)."
+            )
           )
+        }
+        applyStructuredOutput(
+          schema,
+          includeInPrompt: request.contextOptions.includeSchemaInPrompt ?? true,
+          to: &req
         )
+      } else {
+        // Prompted structured output: the schema rides in the system prompt
+        // and the model is trusted to emit conforming JSON unaided. Skips
+        // `output_config.format` entirely, and with it the server-side
+        // grammar-compilation stalls constrained decoding is prone to
+        // (anthropics/ClaudeForFoundationModels#13). The framework parses the
+        // response text either way; a malformed reply surfaces as a decoding
+        // error the caller can retry under constrained decoding.
+        applyPromptedSchema(schema, to: &req)
       }
-      applyStructuredOutput(
-        schema,
-        includeInPrompt: request.contextOptions.includeSchemaInPrompt ?? true,
-        to: &req
-      )
     }
 
     return Built(request: req, isStructured: isStructured)
@@ -354,6 +366,28 @@ enum RequestBuilder {
     @unknown default:
       break
     }
+  }
+
+  /// The schema as prompt text for models trusted to emit conforming JSON
+  /// without constrained decoding. The fence prohibition is load-bearing:
+  /// the framework parses cumulative partial JSON while streaming, and a
+  /// leading ``` breaks it from the first snapshot.
+  private static func applyPromptedSchema(_ schema: GenerationSchema, to req: inout MessagesRequest)
+  {
+    let schemaText = PromptedSchema.text(from: schema)
+    let instruction = """
+      Your ENTIRE response must be a single JSON object conforming exactly to \
+      the JSON Schema below, with properties emitted in EXACTLY the order the \
+      schema lists them — the payload streams to a live UI, so the properties \
+      listed first must be generated first. Output raw JSON only: no prose \
+      before or after, and never wrap it in markdown code fences. Include \
+      EVERY property the schema lists as required, even when you have \
+      nothing to put in it — an empty array [], empty string "", or 0, never \
+      an omitted property.
+
+      \(schemaText)
+      """
+    req.system = (req.system.map { $0 + "\n\n" } ?? "") + instruction
   }
 
   /// Strict JSON Schema via constrained decoding — the model cannot emit a

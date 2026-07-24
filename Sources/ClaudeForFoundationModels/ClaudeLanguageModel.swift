@@ -28,6 +28,14 @@ public struct ClaudeLanguageModel: Sendable {
   public let timeout: TimeInterval
   public let serverTools: Set<ClaudeServerTool>
   public let fixedEffort: ClaudeModel.Effort?
+  /// When false, guided generation skips the API's constrained decoding
+  /// (`output_config.format`): the schema is embedded in the system prompt
+  /// and the model is trusted to emit conforming JSON. Avoids server-side
+  /// grammar-compilation latency (anthropics/ClaudeForFoundationModels#13);
+  /// a malformed reply surfaces as a decoding error the caller can retry
+  /// with a constrained model value. Reserve for models that reliably
+  /// produce schema-conforming JSON unaided.
+  public let constrainedDecoding: Bool
   let authMode: AuthMode
 
   /// - Parameters:
@@ -56,7 +64,8 @@ public struct ClaudeLanguageModel: Sendable {
     fixedEffort: ClaudeModel.Effort? = nil,
     serverTools: Set<ClaudeServerTool> = [],
     baseURL: URL = ClaudeLanguageModel.defaultBaseURL,
-    timeout: TimeInterval = 60
+    timeout: TimeInterval = 60,
+    constrainedDecoding: Bool = true
   ) {
     if let fixedEffort {
       precondition(
@@ -73,6 +82,7 @@ public struct ClaudeLanguageModel: Sendable {
     self.serverTools = serverTools
     self.baseURL = baseURL
     self.timeout = timeout
+    self.constrainedDecoding = constrainedDecoding
   }
 
   /// Idempotent. Under ``AuthMode/appAttest(clientID:)``, performs the
@@ -114,7 +124,8 @@ extension ClaudeLanguageModel: LanguageModel {
       authMode: authMode,
       serverTools: serverTools,
       timeout: timeout,
-      fixedEffort: fixedEffort
+      fixedEffort: fixedEffort,
+      constrainedDecoding: constrainedDecoding
     )
   }
 }

@@ -20,6 +20,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
     public let serverTools: Set<ClaudeServerTool>
     public let timeout: TimeInterval
     public let fixedEffort: ClaudeModel.Effort?
+    public let constrainedDecoding: Bool
 
     public init(
       model: ClaudeModel,
@@ -27,7 +28,8 @@ public struct ClaudeExecutor: LanguageModelExecutor {
       authMode: AuthMode,
       serverTools: Set<ClaudeServerTool> = [],
       timeout: TimeInterval,
-      fixedEffort: ClaudeModel.Effort? = nil
+      fixedEffort: ClaudeModel.Effort? = nil,
+      constrainedDecoding: Bool = true
     ) {
       self.model = model
       self.baseURL = baseURL
@@ -35,6 +37,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
       self.serverTools = serverTools
       self.timeout = timeout
       self.fixedEffort = fixedEffort
+      self.constrainedDecoding = constrainedDecoding
     }
   }
 
@@ -123,8 +126,13 @@ public struct ClaudeExecutor: LanguageModelExecutor {
         from: request,
         model: configuration.model,
         fixedEffort: configuration.fixedEffort,
-        serverTools: configuration.serverTools
+        serverTools: configuration.serverTools,
+        constrainedDecoding: configuration.constrainedDecoding
       )
+      // Prompted structured output arrives as free text the framework parses
+      // as cumulative partial JSON. Strip fences and preamble before the
+      // first channel write without weakening App Attest's retry boundary.
+      let extractJson = built.isStructured && !configuration.constrainedDecoding
       let channelWritten = Mutex(false)
       let (headers, bearer) = try await authContext()
       do {
@@ -132,6 +140,7 @@ public struct ClaudeExecutor: LanguageModelExecutor {
           built.request,
           headers: headers,
           into: channel,
+          extractingJson: extractJson,
           onFirstChannelWrite: { @Sendable in channelWritten.withLock { $0 = true } }
         )
       } catch let error as APIError
@@ -145,7 +154,12 @@ public struct ClaudeExecutor: LanguageModelExecutor {
         await attestSession?.invalidateToken(usedToken: bearer)
         let (retryHeaders, retryBearer) = try await authContext()
         do {
-          try await stream(built.request, headers: retryHeaders, into: channel)
+          try await stream(
+            built.request,
+            headers: retryHeaders,
+            into: channel,
+            extractingJson: extractJson
+          )
         } catch let error as APIError where error.kind == .authentication {
           await attestSession?.invalidateToken(usedToken: retryBearer)
           throw error
@@ -177,14 +191,43 @@ public struct ClaudeExecutor: LanguageModelExecutor {
     _ request: MessagesRequest,
     headers: [String: String],
     into channel: LanguageModelExecutorGenerationChannel,
+    extractingJson: Bool = false,
     onFirstChannelWrite: (@Sendable () -> Void)? = nil
   ) async throws {
+    var events = client.stream(request, headers: headers)
+    if extractingJson {
+      events = Self.extractingJson(from: events)
+    }
     try await EventTranslator()
-      .translate(
-        client.stream(request, headers: headers),
-        into: channel,
-        onFirstChannelWrite: onFirstChannelWrite
-      )
+      .translate(events, into: channel, onFirstChannelWrite: onFirstChannelWrite)
+  }
+
+  /// Filters text deltas through ``JsonStreamExtractor`` so only one balanced
+  /// JSON object reaches the translator; non-text events pass untouched.
+  static func extractingJson(
+    from events: AsyncThrowingStream<StreamEvent, Error>
+  ) -> AsyncThrowingStream<StreamEvent, Error> {
+    AsyncThrowingStream { continuation in
+      let task = Task {
+        var extractor = JsonStreamExtractor()
+        do {
+          for try await event in events {
+            if case .contentBlockDelta(let index, .text(let text)) = event {
+              let kept = extractor.filter(text)
+              if !kept.isEmpty {
+                continuation.yield(.contentBlockDelta(index: index, delta: .text(kept)))
+              }
+            } else {
+              continuation.yield(event)
+            }
+          }
+          continuation.finish()
+        } catch {
+          continuation.finish(throwing: error)
+        }
+      }
+      continuation.onTermination = { _ in task.cancel() }
+    }
   }
 
   /// Per-request headers merged over `ClaudeClient`'s defaults, and the
