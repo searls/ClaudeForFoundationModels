@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import Foundation
+import os
 
 /// Thin HTTP client for `POST /v1/messages`.
 package struct ClaudeClient: Sendable {
+  /// Wire-level timing, so a slow lookup on a detached device is diagnosable
+  /// from Console: was it the API sitting silent before the first byte
+  /// (schema grammar compilation, congestion) or slow generation?
+  private static let logger = Logger(subsystem: "co.searls.LipGloss", category: "claude-api")
+
   package let configuration: Configuration
   private let transport: any HTTPTransport
 
@@ -31,7 +37,13 @@ package struct ClaudeClient: Sendable {
   ) async throws -> MessagesResponse {
     var req = request
     req.stream = false
+    let started = Date.now
     let (data, response) = try await transport.data(for: urlRequest(for: req, headers: headers))
+    let total = Date.now.timeIntervalSince(started)
+    Self.logger.info("send \(req.model, privacy: .public) total=\(total, format: .fixed(precision: 2))s")
+    #if DEBUG
+      print("[claude-api] send \(req.model) total=\(String(format: "%.2f", total))s")
+    #endif
     try Self.check(response, body: data)
     return try JSONDecoder().decode(MessagesResponse.self, from: data)
   }
@@ -50,6 +62,7 @@ package struct ClaudeClient: Sendable {
         do {
           var req = request
           req.stream = true
+          let started = Date.now
           let (bytes, response) = try await transport.bytes(
             for: urlRequest(for: req, headers: headers)
           )
@@ -59,9 +72,30 @@ package struct ClaudeClient: Sendable {
             for try await byte in bytes { body.append(byte) }
             try Self.check(response, body: body)
           }
+          // The request-id ties a slow request to Anthropic's server-side
+          // trace — the one fact that makes a latency report actionable.
+          let requestID =
+            (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "request-id") ?? "-"
+          var awaitingFirstEvent = true
           for try await event in SSEParser.events(from: bytes) {
+            ClaudeRequestMetrics.shared.record(event)
+            if awaitingFirstEvent {
+              awaitingFirstEvent = false
+              let ttfb = Date.now.timeIntervalSince(started)
+              Self.logger.info(
+                "stream \(req.model, privacy: .public) ttfb=\(ttfb, format: .fixed(precision: 2))s request-id=\(requestID, privacy: .public)")
+              #if DEBUG
+                print("[claude-api] stream \(req.model) ttfb=\(String(format: "%.2f", ttfb))s request-id=\(requestID)")
+              #endif
+            }
             continuation.yield(event)
           }
+          let total = Date.now.timeIntervalSince(started)
+          Self.logger.info(
+            "stream \(req.model, privacy: .public) total=\(total, format: .fixed(precision: 2))s")
+          #if DEBUG
+            print("[claude-api] stream \(req.model) total=\(String(format: "%.2f", total))s")
+          #endif
           continuation.finish()
         } catch {
           continuation.finish(throwing: error)
