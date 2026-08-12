@@ -52,7 +52,8 @@ enum RequestBuilder {
         // Thinking text replays as the concatenation it streamed as — an
         // injected separator would modify the block, which the API rejects.
         let thought = text(of: r.segments, separator: "")
-        let isRedacted = (r.metadata[redactedThinkingMetadataKey] as? Bool) == true
+        let isRedacted =
+          r.metadata[redactedThinkingMetadataKey].flatMap { try? Bool($0) } == true
         let block: ContentBlock =
           if isRedacted, let redacted = r.signature {
             .redactedThinking(redacted)
@@ -87,7 +88,19 @@ enum RequestBuilder {
         )
 
       case .response(let r):
-        messages.append(.init(role: .assistant, content: try contentBlocks(from: r.segments)))
+        // Server-tool activity replays ahead of the response text, matching
+        // the stream order the blocks originally arrived in — the API
+        // expects prior `server_tool_use` / `*_tool_result` blocks back
+        // (search results carry encrypted content the model can cite on
+        // later turns).
+        let serverToolBlocks = ClaudeServerToolSegment.activity(in: r)
+          .flatMap { $0.content.wireBlocks(id: $0.id) }
+        messages.append(
+          .init(
+            role: .assistant,
+            content: serverToolBlocks + (try contentBlocks(from: r.segments))
+          )
+        )
 
       @unknown default:
         break
@@ -230,7 +243,7 @@ enum RequestBuilder {
       switch $0 {
       case .text(let t): t.content
       case .structure(let s): s.content.jsonString
-      case .attachment, .custom: nil
+      case .attachment: nil
       @unknown default: nil
       }
     }
@@ -249,23 +262,9 @@ enum RequestBuilder {
           [try ClaudeImage(cgImage: image.cgImage, orientation: image.orientation).contentBlock]
         @unknown default: []
         }
-      case .custom(let segment):
-        customBlocks(from: segment)
       @unknown default: []
       }
     }
-  }
-
-  /// Server-tool activity replays as the wire blocks it came from — the API
-  /// expects prior `server_tool_use` / `*_tool_result` blocks back (search
-  /// results carry encrypted content the model can cite on later turns).
-  /// Other custom segments fall back to their text rendering.
-  private static func customBlocks(from segment: any Transcript.CustomSegment) -> [ContentBlock] {
-    guard let serverTool = segment as? ClaudeServerToolSegment else {
-      let text = String(describing: segment)
-      return text.isEmpty ? [] : [.text(text)]
-    }
-    return serverTool.content.wireBlocks(id: serverTool.id)
   }
 
   private static func toolDefinition(_ def: Transcript.ToolDefinition) -> ToolDefinition {

@@ -390,15 +390,12 @@ struct StubbedExecutor: LanguageModelExecutor {
   }
 }
 
-/// Server-tool segments of every response entry in the transcript, in order.
+/// Server-tool activity of every response entry in the transcript, in order.
 func serverToolSegments(in transcript: Transcript) -> [ClaudeServerToolSegment] {
-  transcript
-    .flatMap { entry -> [Transcript.Segment] in
-      if case .response(let response) = entry { return response.segments }
-      return []
+  transcript.flatMap { entry -> [ClaudeServerToolSegment] in
+    if case .response(let response) = entry {
+      return ClaudeServerToolSegment.activity(in: response)
     }
-    .compactMap { segment in
-      if case .custom(let custom) = segment { return custom as? ClaudeServerToolSegment }
-      return nil
-    }
+    return []
+  }
 }

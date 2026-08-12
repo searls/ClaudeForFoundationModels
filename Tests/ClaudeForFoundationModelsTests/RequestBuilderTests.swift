@@ -450,8 +450,11 @@ import Testing
       .prompt(.init(segments: [.text(.init(content: "Weather?"))])),
       .response(
         .init(
-          assetIDs: [],
-          segments: [.custom(activity), .text(.init(content: "Sunny."))]
+          metadata: [
+            ClaudeServerToolSegment.metadataKey:
+              ClaudeServerToolSegment.metadataValue(for: [activity])
+          ],
+          segments: [.text(.init(content: "Sunny."))]
         )
       ),
       .prompt(.init(segments: [.text(.init(content: "And tomorrow?"))])),
@@ -488,11 +491,13 @@ import Testing
       .prompt(.init(segments: [.text(.init(content: "Weather?"))])),
       .response(
         .init(
-          assetIDs: [],
-          segments: [
-            .custom(ClaudeServerToolSegment(id: "srv_1", content: .webSearch(.init(query: "q")))),
-            .text(.init(content: "Working on it…")),
-          ]
+          metadata: [
+            ClaudeServerToolSegment.metadataKey:
+              ClaudeServerToolSegment.metadataValue(for: [
+                ClaudeServerToolSegment(id: "srv_1", content: .webSearch(.init(query: "q")))
+              ])
+          ],
+          segments: [.text(.init(content: "Working on it…"))]
         )
       ),
       .prompt(.init(segments: [.text(.init(content: "Still there?"))])),

@@ -76,6 +76,27 @@ struct EventTranslator: Sendable {
     /// In-flight server-tool calls by tool-use id, so a result updates the
     /// same segment its call created.
     var pendingServerTools: [String: ClaudeServerToolSegment.Content] = [:]
+    /// The turn's server-tool activity in stream order, re-published whole
+    /// to the response entry's metadata on every change (the OS 27 SDKs
+    /// removed custom transcript segments; metadata is the surviving
+    /// updatable surface).
+    var serverToolActivity: [ClaudeServerToolSegment] = []
+    func publishServerTool(_ segment: ClaudeServerToolSegment) async {
+      if let index = serverToolActivity.firstIndex(where: { $0.id == segment.id }) {
+        serverToolActivity[index] = segment
+      } else {
+        serverToolActivity.append(segment)
+      }
+      await channel.send(
+        .response(
+          entryID: responseEntryID,
+          action: .updateMetadata([
+            ClaudeServerToolSegment.metadataKey:
+              ClaudeServerToolSegment.metadataValue(for: serverToolActivity)
+          ])
+        )
+      )
+    }
     var promptTokens = 0
     var cachedTokens = 0
 
@@ -128,15 +149,10 @@ struct EventTranslator: Sendable {
           // the segment immediately; the stop handler re-emits the same id.
           // An empty input means the real input is still streaming as deltas,
           // and parsing it now would mislabel a known tool as unrecognized.
-          await channel.send(
-            .response(
-              entryID: responseEntryID,
-              action: .updateCustomSegment(
-                ClaudeServerToolSegment(
-                  id: id,
-                  content: .init(callToolName: name, input: input)
-                )
-              )
+          await publishServerTool(
+            ClaudeServerToolSegment(
+              id: id,
+              content: .init(callToolName: name, input: input)
             )
           )
         case .serverToolResult(let toolUseID, let type, let content):
@@ -152,14 +168,7 @@ struct EventTranslator: Sendable {
                 resultJSON: content.jsonText
               )
             )
-          await channel.send(
-            .response(
-              entryID: responseEntryID,
-              action: .updateCustomSegment(
-                ClaudeServerToolSegment(id: toolUseID, content: merged)
-              )
-            )
-          )
+          await publishServerTool(ClaudeServerToolSegment(id: toolUseID, content: merged))
         default:
           break
         }
@@ -189,14 +198,7 @@ struct EventTranslator: Sendable {
             : JSONValue.parsed(accumulated) ?? .null
           let content = ClaudeServerToolSegment.Content(callToolName: name, input: payload)
           pendingServerTools[id] = content
-          await channel.send(
-            .response(
-              entryID: responseEntryID,
-              action: .updateCustomSegment(
-                ClaudeServerToolSegment(id: id, content: content)
-              )
-            )
-          )
+          await publishServerTool(ClaudeServerToolSegment(id: id, content: content))
         }
         blocks.removeValue(forKey: index)
 

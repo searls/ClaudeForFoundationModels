@@ -5,25 +5,29 @@ import Foundation
 import FoundationModels
 
 /// One server-side tool round-trip (web search, web fetch, code execution),
-/// surfaced in the transcript as a custom segment.
+/// surfaced in the transcript as response-entry metadata under
+/// ``metadataKey``. (Earlier releases used `Transcript.CustomSegment`, which
+/// the OS 27 SDKs removed.)
 ///
-/// A segment appears when the model invokes the tool and is updated in place
-/// when the result arrives — the result field is `nil` only while the call is
-/// still in flight mid-stream.
+/// An activity value appears when the model invokes the tool and is updated
+/// in place when the result arrives — the result field is `nil` only while
+/// the call is still in flight mid-stream.
 ///
 /// ```swift
-/// if case .custom(let custom) = segment,
-///   let activity = custom as? ClaudeServerToolSegment
-/// {
-///   switch activity.content {
-///   case .webSearch(let search):
-///     showQuery(search.query)
-///     if let results = search.results { showHits(results) }
-///   default: break
+/// if case .response(let response) = entry {
+///   for activity in ClaudeServerToolSegment.activity(in: response) {
+///     switch activity.content {
+///     case .webSearch(let search):
+///       showQuery(search.query)
+///       if let results = search.results { showHits(results) }
+///     default: break
+///     }
 ///   }
 /// }
 /// ```
-public struct ClaudeServerToolSegment: Transcript.CustomSegment {
+public struct ClaudeServerToolSegment: Sendable, Equatable, Identifiable, Codable,
+  CustomStringConvertible, PromptRepresentable, InstructionsRepresentable
+{
   public let id: String
   public let content: Content
 
@@ -270,4 +274,29 @@ public struct ClaudeServerToolSegment: Transcript.CustomSegment {
 
   public var promptRepresentation: Prompt { Prompt(description) }
   public var instructionsRepresentation: Instructions { Instructions(description) }
+}
+
+// MARK: - Transcript metadata bridge
+
+extension ClaudeServerToolSegment {
+  /// The response-entry metadata key one turn's server-tool activity rides
+  /// under, as a JSON-encoded `[ClaudeServerToolSegment]` in stream order.
+  public static let metadataKey = "claudeServerToolActivity"
+
+  /// The turn's server-tool activity recorded on a response entry, in
+  /// stream order; empty when the turn used no server tools.
+  public static func activity(in response: Transcript.Response) -> [ClaudeServerToolSegment] {
+    guard let content = response.metadata[metadataKey],
+      let json = try? String(content),
+      let data = json.data(using: .utf8)
+    else { return [] }
+    return (try? JSONDecoder().decode([ClaudeServerToolSegment].self, from: data)) ?? []
+  }
+
+  /// The metadata value encoding this activity list, for the streaming
+  /// channel's `updateMetadata`.
+  static func metadataValue(for activity: [ClaudeServerToolSegment]) -> String {
+    guard let data = try? JSONEncoder().encode(activity) else { return "[]" }
+    return String(decoding: data, as: UTF8.self)
+  }
 }
